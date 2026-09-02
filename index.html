@@ -638,7 +638,7 @@ function openSettings() {
       <button class="btn wide" id="so" style="margin-top:10px">Sign out</button>
     </div></div>`;
   wirePasswordForm(modalHost, null);
-  modalHost.querySelector('#so').onclick = () => { closeModal(); sb.auth.signOut(); };
+  modalHost.querySelector('#so').onclick = doSignOut;
 }
 
 /* ============================================================
@@ -744,6 +744,12 @@ function showIdleWarn() {
   paint();
   clearInterval(cdTimer);
   cdTimer = setInterval(paint, 1000);
+async function doSignOut() {
+  stopIdle();
+  closeModal();
+  try { await sb.auth.signOut({ scope:'local' }); } catch {}
+  S.session = null; S.profile = null;
+  render();
 }
 
 function idleLogout() {
@@ -776,7 +782,7 @@ function render() {
     <div class="wrap">${S.flash ? `<div class="msg ${S.flash.kind === 'err' ? '' : 'ok'}">${esc(S.flash.text)}</div>` : ''}
     ${tab === 'admin' ? adminHTML() : mineHTML()}</div>`;
 
-  document.getElementById('out').onclick = () => sb.auth.signOut();
+  document.getElementById('out').onclick = doSignOut;
   document.getElementById('cfg').onclick = openSettings;
   app.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => {
     S.tab = b.dataset.tab;
