@@ -317,7 +317,8 @@ async function loadMine() {
   const from = S.mode === 'week' ? iso(mondayOf(S.anchor)) : iso(monthStart(S.anchor));
   const to   = S.mode === 'week' ? iso(addD(mondayOf(S.anchor),6)) : iso(monthEnd(S.anchor));
   const { data, error } = await sb.from('time_entries')
-    .select('id,entry_date,amount,comment').gte('entry_date', from).lte('entry_date', to);
+    .select('id,entry_date,amount,comment').eq('user_id', S.session.user.id)
+    .gte('entry_date', from).lte('entry_date', to);
   if (error) return flash('Could not load entries: ' + error.message, 'err');
   S.entries = Object.fromEntries((data ?? []).map(r => [r.entry_date, r]));
   render();
