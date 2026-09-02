@@ -744,12 +744,6 @@ function showIdleWarn() {
   paint();
   clearInterval(cdTimer);
   cdTimer = setInterval(paint, 1000);
-async function doSignOut() {
-  stopIdle();
-  closeModal();
-  try { await sb.auth.signOut({ scope:'local' }); } catch {}
-  S.session = null; S.profile = null;
-  render();
 }
 
 function idleLogout() {
@@ -757,6 +751,14 @@ function idleLogout() {
   logoutNotice = `Signed out after ${IDLE_MINUTES} minutes without activity.`;
   closeModal();
   sb.auth.signOut();
+}
+
+async function doSignOut() {
+  stopIdle();
+  closeModal();
+  try { await sb.auth.signOut({ scope:'local' }); } catch {}
+  S.session = null; S.profile = null;
+  render();
 }
 
 /* ============================================================
