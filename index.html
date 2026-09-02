@@ -650,7 +650,11 @@ function dismissRemind() { try { localStorage.setItem(remindKey(), '1'); } catch
 
 async function checkMissing() {
   S.missing = [];
-  const from = iso(addD(new Date(), -REMIND_DAYS_BACK));
+    // Nie ueber den Monatsanfang hinaus mahnen: am Monatsersten faengt
+  // die Zaehlung bei Null an, unabhaengig von REMIND_DAYS_BACK.
+  const back = addD(new Date(), -REMIND_DAYS_BACK);
+  const mstart = monthStart(new Date());
+  const from = iso(back > mstart ? back : mstart);
   const to = iso(addD(new Date(), -1));
   if (from > to) return;
   const [{ data:have, error:e1 }, { data:first, error:e2 }] = await Promise.all([
