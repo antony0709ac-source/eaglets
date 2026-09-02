@@ -449,7 +449,7 @@ function openDay(date, opts = {}) {
       <p class="small muted">${cur ? 'Entry exists — saving overwrites it.' : 'No entry yet.'}</p>
       <div class="fld"><label>Amount</label><div class="picker" id="pk"></div></div>
       <div class="fld"><label for="cm">Comment (optional)</label>
-        <textarea id="cm" maxlength="500" placeholder="e.g. Telli hall, equipment transport">${esc(cur?.comment ?? '')}</textarea></div>
+        <textarea id="cm" maxlength="500" placeholder="">${esc(cur?.comment ?? '')}</textarea></div>
       <div class="acts">
         <button class="btn primary" id="sv">Save</button>
         ${cur ? '<button class="btn" id="dl">Delete</button>' : ''}
