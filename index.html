@@ -192,6 +192,31 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent}
 .bar{display:flex; align-items:center; gap:10px; background:var(--ink); color:#fff; padding:10px 12px; margin:12px 0}
 .bar .t{flex:1; font-size:14px}
 .bar button{background:var(--red); border:0; color:#fff; min-height:36px; padding:0 12px; font-family:"Barlow Condensed",sans-serif; font-size:16px; font-weight:600}
+/* ---------- Druck / PDF-Export ----------
+   Der Export nutzt den Druckdialog des Geraets. Am PC "Als PDF
+   speichern" waehlen, auf dem iPhone im Teilen-Menue "In Dateien
+   speichern". Kein zusaetzliches Skript und keine Bibliothek noetig. */
+#printroot{display:none}
+@media print{
+  #app,#modal,#warnhost{display:none !important}
+  #printroot{display:block !important}
+  @page{size:A4 portrait; margin:14mm}
+  body{background:#fff; color:#000; font-size:10.5pt}
+  .pr-h{display:flex; align-items:center; gap:12px; border-bottom:2px solid #231f20; padding-bottom:8px; margin-bottom:14px}
+  .pr-h img{height:46px; width:auto}
+  .pr-h .t{font-family:"Barlow Condensed",sans-serif; font-weight:700; font-size:21px; line-height:1.1}
+  .pr-h .s{font-size:9.5pt; color:#555}
+  table.pr{width:100%; border-collapse:collapse}
+  table.pr th,table.pr td{border-bottom:1px solid #ccc; padding:5px 4px; text-align:left; vertical-align:top}
+  table.pr th{font-family:"Barlow Condensed",sans-serif; text-transform:uppercase; font-size:9pt; letter-spacing:.03em; border-bottom:1.5px solid #231f20}
+  table.pr .n{text-align:right; white-space:nowrap; padding-right:14px}
+  table.pr tr.we td{background:#f2f2f2}
+  table.pr tfoot td{font-weight:700; border-top:1.5px solid #231f20; border-bottom:0; padding-top:7px}
+  thead{display:table-header-group}      /* Kopfzeile auf jeder Seite */
+  tr{break-inside:avoid}
+  .pr-sig{display:flex; gap:34px; margin-top:26px; font-size:9.5pt; color:#555}
+  .pr-sig div{flex:1; border-top:1px solid #231f20; padding-top:5px}
+}
 </style>
 </head>
 <body>
@@ -199,6 +224,7 @@ button{cursor:pointer; -webkit-tap-highlight-color:transparent}
 <div id="app"><div class="center">Loading …</div></div>
 <div id="modal"></div>
 <div id="warnhost"></div>
+<div id="printroot"></div>
 
 <script type="module">
 /* ============================================================
@@ -429,6 +455,60 @@ function exportCSV() {
   a.href = URL.createObjectURL(blob); a.download = name;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+
+/* ============================================================
+   PDF-Export ueber den Druckdialog
+   Bewusst ohne externe Bibliothek: eine Druckansicht ist auf jedem
+   Geraet verfuegbar und liefert auf iOS wie auf Windows ein PDF.
+   Der Nachteil: der Dateiname kommt vom Betriebssystem, nicht von uns.
+   ============================================================ */
+function exportPDF() {
+  const names = Object.fromEntries(S.people.map(p => [p.id, p.full_name]));
+  const rows = S.aRows
+    .filter(r => S.aPerson === 'all' || r.user_id === S.aPerson)
+    .sort((a,b) => a.entry_date.localeCompare(b.entry_date) ||
+                   (names[a.user_id] ?? '').localeCompare(names[b.user_id] ?? ''));
+  if (!rows.length) { flash('Nothing to export for this month.', 'err'); return; }
+
+  const everyone = S.aPerson === 'all';
+  const who    = everyone ? 'All employees' : (names[S.aPerson] ?? '');
+  const period = `${MO[S.aMonth.getMonth()]} ${S.aMonth.getFullYear()}`;
+  const total  = rows.reduce((s,r) => s + (AM[r.amount]?.f ?? 0), 0);
+  const nCols  = everyone ? 4 : 3;   // Spalten links des Tagewerts
+
+  const body = rows.map(r => `<tr class="${isWE(r.entry_date) ? 'we' : ''}">
+      <td>${fmtShort(r.entry_date)}</td>
+      <td>${wdName(r.entry_date)}</td>
+      ${everyone ? `<td>${esc(names[r.user_id] ?? '')}</td>` : ''}
+      <td>${AM[r.amount]?.label ?? esc(r.amount)}</td>
+      <td class="n">${AM[r.amount]?.f ?? 0}</td>
+      <td>${esc(r.comment ?? '')}</td>
+    </tr>`).join('');
+
+  document.getElementById('printroot').innerHTML = `
+    <div class="pr-h">
+      <img src="logo.png" alt="" onerror="this.style.display='none'">
+      <div>
+        <div class="t">Time tracking &mdash; ${esc(who)}</div>
+        <div class="s">${period} &middot; printed ${fmtLong(today())}</div>
+      </div>
+    </div>
+    <table class="pr">
+      <thead><tr>
+        <th>Date</th><th>Day</th>${everyone ? '<th>Employee</th>' : ''}
+        <th>Amount</th><th class="n">Days</th><th>Comment</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+      <tfoot><tr>
+        <td colspan="${nCols}">Total</td>
+        <td class="n">${Math.round(total*100)/100}</td><td></td>
+      </tr></tfoot>
+    </table>
+    <div class="pr-sig"><div>Employee</div><div>Club administration</div></div>`;
+
+  window.print();
 }
 
 /* ============================================================
@@ -944,7 +1024,11 @@ function adminHTML() {
   }
 
   return `${head}${body}
-    <button class="btn wide" id="csv" style="margin-top:18px">Export CSV${S.aPerson === 'all' ? '' : ' (this person)'}</button>
+    <div class="acts">
+      <button class="btn" id="csv">Export CSV</button>
+      <button class="btn" id="pdf">Export PDF</button>
+    </div>
+    <p class="small muted" style="margin-top:6px">${S.aPerson === 'all' ? 'All employees' : 'This person'}, ${MO[S.aMonth.getMonth()]} ${S.aMonth.getFullYear()}.</p>
     <div class="legend">
       ${AMOUNTS.map(a => `<span>${glyph(a.key)}${a.label}</span>`).join('')}
       <span><i style="width:6px;height:6px;border-radius:50%;background:var(--red);display:block"></i>Comment</span>
@@ -961,6 +1045,7 @@ function wireAdmin() {
   app.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { S.aPerson = b.dataset.p; render(); });
   app.querySelectorAll('[data-p2]').forEach(b => b.onclick = () => { S.aPerson = b.dataset.p2; render(); });
   const c = document.getElementById('csv'); if (c) c.onclick = exportCSV;
+  const g = document.getElementById('pdf'); if (g) g.onclick = exportPDF;
 
   // Nur der Chef sieht dieses Dashboard ueberhaupt. Von hier aus darf er
   // jeden Tag des gewaehlten Mitarbeiters anlegen, aendern und loeschen.
