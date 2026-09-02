@@ -217,6 +217,11 @@ const IDLE_MINUTES         = 30;    // Abmeldung nach Inaktivitaet
 const IDLE_WARN_SECONDS    = 60;    // Vorwarnung davor
 const MIN_PASSWORD_LENGTH  = 8;
 
+/* Meldungen, wenn die Datenbank einen Schreibzugriff stillschweigend
+   verwirft. Das passiert, wenn die passende RLS-Policy fehlt. */
+const NO_DELETE = 'Nothing was deleted. The database is refusing it — the delete policy is missing.';
+const NO_WRITE  = 'Nothing was saved. The database is refusing it — check the write policy.';
+
 /* ============================================================ */
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
@@ -348,31 +353,47 @@ function subscribe() {
 /* ============================================================
    Schreiben
    ============================================================ */
-async function saveOne(date, amount, comment) {
-  const { error } = await sb.from('time_entries').upsert(
-    { user_id:S.session.user.id, entry_date:date, amount, comment: comment?.trim() || null },
-    { onConflict:'user_id,entry_date' });
+/* Alle Schreibzugriffe nehmen den Zielbenutzer als Parameter. Ohne Angabe
+   ist es der angemeldete Benutzer. Fremde Benutzer darf nur ein Admin
+   schreiben - durchgesetzt wird das in den RLS-Policies, nicht hier.
+
+   Wichtig: sperrt eine RLS-Policy den Zugriff, liefert Postgres bei
+   DELETE und UPDATE keinen Fehler, sondern null betroffene Zeilen. Ohne
+   .select() sieht der Client einen Erfolg, obwohl nichts passiert ist -
+   genau das war die Ursache des stummen Loeschens. Darum pruefen wir
+   ueberall die zurueckgegebenen Zeilen. */
+
+const myId = () => S.session.user.id;
+
+async function saveOne(date, amount, comment, userId = myId()) {
+  const { data, error } = await sb.from('time_entries').upsert(
+    { user_id:userId, entry_date:date, amount, comment: comment?.trim() || null },
+    { onConflict:'user_id,entry_date' }).select('id');
   if (error) { flash('Not saved: ' + error.message, 'err'); return false; }
+  if (!data?.length) { flash(NO_WRITE, 'err'); return false; }
   return true;
 }
 
-async function saveRange(from, to, amount, comment, skipWeekends) {
+async function saveRange(from, to, amount, comment, skipWeekends, userId = myId()) {
   let list = days(from, to);
   if (skipWeekends) list = list.filter(d => !isWE(d));
   if (!list.length) { flash('No days in that range.', 'err'); return false; }
   const rows = list.map(d => ({
-    user_id:S.session.user.id, entry_date:d, amount, comment: comment?.trim() || null,
+    user_id:userId, entry_date:d, amount, comment: comment?.trim() || null,
   }));
-  const { error } = await sb.from('time_entries').upsert(rows, { onConflict:'user_id,entry_date' });
+  const { data, error } = await sb.from('time_entries')
+    .upsert(rows, { onConflict:'user_id,entry_date' }).select('id');
   if (error) { flash('Not saved: ' + error.message, 'err'); return false; }
-  flash(`Saved ${list.length} ${list.length === 1 ? 'day' : 'days'}.`);
+  if (!data?.length) { flash(NO_WRITE, 'err'); return false; }
+  flash(`Saved ${data.length} ${data.length === 1 ? 'day' : 'days'}.`);
   return true;
 }
 
-async function deleteOne(date) {
-  const { error } = await sb.from('time_entries').delete()
-    .eq('user_id', S.session.user.id).eq('entry_date', date);
+async function deleteOne(date, userId = myId()) {
+  const { data, error } = await sb.from('time_entries').delete()
+    .eq('user_id', userId).eq('entry_date', date).select('id');
   if (error) { flash('Not deleted: ' + error.message, 'err'); return false; }
+  if (!data?.length) { flash(NO_DELETE, 'err'); return false; }
   return true;
 }
 
@@ -412,12 +433,19 @@ function exportCSV() {
 /* ============================================================
    Modal: Einzeltag
    ============================================================ */
-function openDay(date, fromReminder = false) {
-  const cur = S.entries[date] ?? null;
+function openDay(date, opts = {}) {
+  const fromReminder = opts.fromReminder === true;
+  const userId = opts.userId ?? myId();
+  const other = userId !== myId();          // Chef bearbeitet einen Mitarbeiter
+  const cur = other
+    ? (S.aRows.find(r => r.user_id === userId && r.entry_date === date) ?? null)
+    : (S.entries[date] ?? null);
+  const who = other ? (S.people.find(p => p.id === userId)?.full_name ?? '') : '';
   let amount = cur?.amount ?? null;
   modalHost.innerHTML = `
     <div class="ov" data-close="1"><div class="sheet" role="dialog" aria-modal="true">
       <h3>${fmtLong(date)}</h3>
+      ${other ? `<div class="msg">Editing <b>${esc(who)}</b> as administrator.</div>` : ''}
       <p class="small muted">${cur ? 'Entry exists — saving overwrites it.' : 'No entry yet.'}</p>
       <div class="fld"><label>Amount</label><div class="picker" id="pk"></div></div>
       <div class="fld"><label for="cm">Comment (optional)</label>
@@ -439,33 +467,41 @@ function openDay(date, fromReminder = false) {
     const b = e.target.closest('button[data-k]'); if (!b) return;
     amount = amount === b.dataset.k ? null : b.dataset.k; paint();
   };
+  const reload = () => other ? loadAdmin() : loadMine();
   modalHost.querySelector('#sv').onclick = async e => {
     if (!amount) return flash('Please choose an amount.', 'err');
     e.target.disabled = true;
-    if (await saveOne(date, amount, modalHost.querySelector('#cm').value)) {
-      flash(`Saved ${fmtShort(date)}.`);
-      S.missing = S.missing.filter(d => d !== date);
-      loadMine();
+    if (await saveOne(date, amount, modalHost.querySelector('#cm').value, userId)) {
+      flash(`Saved ${fmtShort(date)}${other ? ` for ${esc(who.split(' ')[0])}` : ''}.`);
+      if (!other) S.missing = S.missing.filter(d => d !== date);
+      reload();
       if (fromReminder && S.missing.length) openReminder(); else closeModal();
     } else e.target.disabled = false;
   };
   const bk = modalHost.querySelector('#bk');
   if (bk) bk.onclick = () => openReminder();
   const dl = modalHost.querySelector('#dl');
-  if (dl) dl.onclick = async () => {
-    if (await deleteOne(date)) { closeModal(); flash(`Deleted ${fmtShort(date)}.`); loadMine(); }
+  if (dl) dl.onclick = async e => {
+    e.target.disabled = true;
+    if (await deleteOne(date, userId)) {
+      closeModal(); flash(`Deleted ${fmtShort(date)}.`); reload();
+    } else e.target.disabled = false;
   };
 }
 
 /* ============================================================
    Modal: Zeitraum
    ============================================================ */
-function openRange() {
+function openRange(opts = {}) {
   const t = today();
+  const userId = opts.userId ?? myId();
+  const other = userId !== myId();
+  const who = other ? (S.people.find(p => p.id === userId)?.full_name ?? '') : '';
   let amount = null;
   modalHost.innerHTML = `
     <div class="ov" data-close="1"><div class="sheet" role="dialog" aria-modal="true">
       <h3>Add a period</h3>
+      ${other ? `<div class="msg">For <b>${esc(who)}</b> as administrator.</div>` : ''}
       <p class="small muted">One entry is created per day in the range. Existing entries on those days are overwritten.</p>
       <div class="fld"><label for="f1">From</label><input type="date" id="f1" value="${t}"></div>
       <div class="fld"><label for="f2">To</label><input type="date" id="f2" value="${t}"></div>
@@ -502,8 +538,9 @@ function openRange() {
     if (!amount) return flash('Please choose an amount.', 'err');
     if (days(f, e).length > 200) return flash('Range too long — please split it up.', 'err');
     ev.target.disabled = true;
-    if (await saveRange(f, e, amount, $('#cm').value, $('#sw').checked)) {
-      closeModal(); loadMine(); checkMissing().then(render);
+    if (await saveRange(f, e, amount, $('#cm').value, $('#sw').checked, userId)) {
+      closeModal();
+      if (other) loadAdmin(); else { loadMine(); checkMissing().then(render); }
     } else ev.target.disabled = false;
   };
 }
@@ -645,7 +682,7 @@ function openReminder() {
       </div>
     </div></div>`;
   modalHost.querySelectorAll('[data-day]').forEach(b =>
-    b.onclick = () => openDay(b.dataset.day, true));
+    b.onclick = () => openDay(b.dataset.day, { fromReminder:true }));
   modalHost.querySelector('#later').onclick = () => { dismissRemind(); closeModal(); };
 }
 
@@ -843,7 +880,7 @@ function wireMine() {
     else S.anchor = S.mode === 'week' ? addD(mondayOf(S.anchor), n*7) : addM(S.anchor, n);
     loadMine();
   });
-  const r = document.getElementById('rng'); if (r) r.onclick = openRange;
+  const r = document.getElementById('rng'); if (r) r.onclick = () => openRange();
   const ro = document.getElementById('remopen'); if (ro) ro.onclick = openReminder;
   if (S.tab === 'mine') app.querySelectorAll('[data-day]').forEach(b => b.onclick = () => openDay(b.dataset.day));
 }
@@ -885,6 +922,8 @@ function adminHTML() {
     body = `<h3 class="disp" style="font-size:21px;margin-bottom:8px">${esc(names[S.aPerson] ?? '')}</h3>
       ${calHTML(list, byKey, S.aPerson)}
       <div class="total"><span class="disp" style="font-size:19px">Total</span><span class="n">${nDays(totalOf(S.aPerson))}</span></div>
+      <button class="btn dark wide" id="arng" style="margin-top:16px">+ Add a period for this person</button>
+      <p class="small muted" style="margin-top:8px">Tap any day to enter, change or delete it.</p>
       <h3 class="disp" style="font-size:19px;margin:20px 0 6px">Entries</h3>
       ${rows.length ? `<div class="cmlist">${rows.map(r =>
         `<div><b>${fmtShort(r.entry_date)}</b>${AM[r.amount].label}${r.comment ? ` <span class="muted">— ${esc(r.comment)}</span>` : ''}</div>`).join('')}</div>`
@@ -909,8 +948,15 @@ function wireAdmin() {
   app.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { S.aPerson = b.dataset.p; render(); });
   app.querySelectorAll('[data-p2]').forEach(b => b.onclick = () => { S.aPerson = b.dataset.p2; render(); });
   const c = document.getElementById('csv'); if (c) c.onclick = exportCSV;
-  if (S.tab === 'admin' && S.aPerson !== 'all') {
-    app.querySelectorAll('.cal [data-day]').forEach(b => b.onclick = null); // Chef liest nur
+
+  // Nur der Chef sieht dieses Dashboard ueberhaupt. Von hier aus darf er
+  // jeden Tag des gewaehlten Mitarbeiters anlegen, aendern und loeschen.
+  if (S.tab === 'admin' && S.aPerson !== 'all' && S.profile?.role === 'admin') {
+    const uid = S.aPerson;
+    app.querySelectorAll('.cal [data-day]').forEach(b =>
+      b.onclick = () => openDay(b.dataset.day, { userId:uid }));
+    const ar = document.getElementById('arng');
+    if (ar) ar.onclick = () => openRange({ userId:uid });
   }
 }
 
