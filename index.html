@@ -775,16 +775,47 @@ function openReminder() {
    Abmeldung bei Inaktivitaet
    ============================================================ */
 let lastAct = Date.now(), idleTimer = null, cdTimer = null, warning = false;
+let lastWrite = 0;
 const ACT_EVENTS = ['pointerdown','keydown','touchstart','scroll'];
 
+/* Der Zeitstempel der letzten Aktivitaet liegt zusaetzlich im
+   localStorage. Grund: iOS verwirft eine im Hintergrund liegende Seite
+   nach einiger Zeit aus dem Speicher. Beim Zurueckkehren wird sie neu
+   geladen, die Sitzung aus dem Speicher wiederhergestellt - und eine
+   nur im Arbeitsspeicher gehaltene Zeitmessung begaenne wieder bei
+   Null. Genau darum lief die Abmeldung nach 30 Minuten nie. */
+const ACT_KEY = 'tt_last_act';
+
+function setAct(t) {
+  lastAct = t;
+  // Schreiben gedrosselt: scroll feuert sehr haeufig, und eine
+  // Genauigkeit von 5 Sekunden genuegt gegen eine halbe Stunde.
+  // Math.abs, damit das Schreiben auch weiterlaeuft, wenn die Uhr des
+  // Geraets zurueckgestellt wird.
+  if (Math.abs(t - lastWrite) > 5000) {
+    lastWrite = t;
+    try { localStorage.setItem(ACT_KEY, String(t)); } catch {}
+  }
+}
+
+function clearAct() {
+  lastWrite = 0;
+  try { localStorage.removeItem(ACT_KEY); } catch {}
+}
+
 function touchAct() {
-  lastAct = Date.now();
+  setAct(Date.now());
   if (warning) { warning = false; clearInterval(cdTimer); warnHost.innerHTML = ''; }
 }
 
 function startIdle() {
   stopIdle();
-  lastAct = Date.now();
+  let stored = 0;
+  try { stored = Number(localStorage.getItem(ACT_KEY)) || 0; } catch {}
+  // War die Seite laenger weg als erlaubt, sofort abmelden statt
+  // erneut eine halbe Stunde zu gewaehren.
+  if (stored && Date.now() - stored >= IDLE_MINUTES * 60000) { idleLogout(); return; }
+  setAct(stored || Date.now());
   ACT_EVENTS.forEach(e => window.addEventListener(e, touchAct, { passive:true }));
   document.addEventListener('visibilitychange', onVis);
   idleTimer = setInterval(idleTick, 5000);
@@ -830,15 +861,19 @@ function showIdleWarn() {
   cdTimer = setInterval(paint, 1000);
 }
 
+/* Fruehere Fassung rief hier sb.auth.signOut() ohne await auf. Der
+   Aufruf braucht das Netz; scheiterte er, blieb die Sitzung bestehen
+   und es passierte nichts. doSignOut verwirft die Sitzung in jedem
+   Fall lokal. */
 function idleLogout() {
   stopIdle();
   logoutNotice = `Signed out after ${IDLE_MINUTES} minutes without activity.`;
-  closeModal();
-  sb.auth.signOut();
+  doSignOut();
 }
 
 async function doSignOut() {
   stopIdle();
+  clearAct();
   closeModal();
   try { await sb.auth.signOut({ scope:'local' }); } catch {}
   S.session = null; S.profile = null;
@@ -892,6 +927,7 @@ function renderLogin() {
   const go = async () => {
     const btn = document.getElementById('in'), er = document.getElementById('er');
     btn.disabled = true; er.classList.add('hide');
+    clearAct();   // frische Anmeldung: Zeitmessung neu beginnen
     const { error } = await sb.auth.signInWithPassword({
       email: document.getElementById('em').value.trim(),
       password: document.getElementById('pw').value,
